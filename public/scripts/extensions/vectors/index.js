@@ -275,6 +275,7 @@ async function onVectorizeAllClick() {
 }
 
 let syncBlocked = false;
+let chatRevision = 0;
 
 /**
  * Gets the chunk delimiters for splitting text.
@@ -453,6 +454,7 @@ async function synchronizeChat(batchSize = 5) {
         syncBlocked = true;
         const context = getContext();
         const chatId = getCurrentChatId();
+        const syncRevision = chatRevision;
 
         if (!chatId || !Array.isArray(context.chat)) {
             console.debug('Vectors: No chat selected');
@@ -466,7 +468,6 @@ async function synchronizeChat(batchSize = 5) {
         const newVectorItems = hashedMessages
             .filter(x => !hashesInCollection.includes(x.hash))
             .filter(x => !skippedHashes.has(x.hash));
-        const deletedHashes = hashesInCollection.filter(x => !hashedMessages.some(y => y.hash === x));
 
         let batch = newVectorItems.slice(0, batchSize);
 
@@ -497,6 +498,33 @@ async function synchronizeChat(batchSize = 5) {
                 for (const item of batch) skippedHashes.add(item.hash);
             }
         }
+
+        // Do not perform destructive cleanup using a stale chat snapshot.
+        // If the chat changed while embedding/summarization was running,
+        // leave the old vectors alone and let the next sync reconcile them.
+        if (syncRevision !== chatRevision || chatId !== getCurrentChatId()) {
+            console.warn('Vectors: Chat changed during synchronization; skipping vector deletion and scheduling a resync');
+            scheduleChatSync();
+            return newVectorItems.length - batchSize;
+        }
+
+        const currentContext = getContext();
+        if (!Array.isArray(currentContext.chat)) {
+            console.warn('Vectors: Current chat unavailable; skipping vector deletion');
+            return newVectorItems.length - batchSize;
+        }
+
+        const currentHashedMessages = currentContext.chat
+            .filter(x => settings.keep_hidden || !x.is_system)
+            .map(x => ({
+                text: String(substituteParams(x.mes)),
+                hash: getStringHash(substituteParams(x.mes)),
+                index: currentContext.chat.indexOf(x),
+            }));
+
+        const deletedHashes = hashesInCollection.filter(
+            x => !currentHashedMessages.some(y => y.hash === x),
+        );
 
         if (deletedHashes.length > 0) {
             await deleteVectorItems(chatId, deletedHashes);
@@ -890,7 +918,11 @@ function overlapChunks(chunk, index, chunks, overlapSize) {
 
 globalThis.vectors_rearrangeChat = rearrangeChat;
 
-const onChatEvent = debounce(async () => await moduleWorker.update(), debounce_timeout.relaxed);
+const scheduleChatSync = debounce(async () => await moduleWorker.update(), debounce_timeout.relaxed);
+const onChatEvent = () => {
+    chatRevision++;
+    scheduleChatSync();
+};
 
 /**
  * Gets the text to query from the chat
