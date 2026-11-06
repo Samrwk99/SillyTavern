@@ -2135,7 +2135,8 @@ router.post('/status', async function (request, statusResponse) {
 
                 if (Array.isArray(models)) {
                     const modelIds = models.filter(x => x && typeof x === 'object').map(x => x.id).sort();
-                    console.info('Available models:', modelIds);
+//                    console.info('Available models:', modelIds);
+                    console.info('Available models:', "Models Found");
                 } else {
                     console.warn('Chat Completion endpoint did not return a list of models.');
                 }
